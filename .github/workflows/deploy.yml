@@ -1,0 +1,88 @@
+# Builds the ZENT UI (ui.Dockerfile) and API (api.Dockerfile) and deploys them together so they always match.
+# dev branch -> dev namespace, main -> prod (needs approval). Secrets: KUBE_CONFIG_DEV, KUBE_CONFIG_PROD,
+# CONFIG_REPO_TOKEN. The UI image bakes in API_URL (Next.js rewrites are fixed at build time): inside the
+# cluster the API is the k8s-app-backend Service.
+name: build-and-deploy
+on:
+  push:
+    branches: [dev, main]
+
+env:
+  OWNER: thimirasadeesha
+  CONFIG_REPO: ThimiraSadeesha/k8s-config
+
+concurrency:
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write }
+    strategy:
+      matrix:
+        include:
+        - { image: k8s-app-frontend, file: ui.Dockerfile }
+        - { image: k8s-app-backend, file: api.Dockerfile }
+    steps:
+    - uses: actions/checkout@v4
+    - uses: docker/setup-buildx-action@v3
+    - uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - name: Compute tag
+      run: echo "TAG=${GITHUB_SHA::8}" >> "$GITHUB_ENV"
+    - uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: ${{ matrix.file }}
+        build-args: |
+          API_URL=http://k8s-app-backend
+        push: true
+        tags: ghcr.io/${{ env.OWNER }}/${{ matrix.image }}:${{ env.TAG }}
+        cache-from: type=gha,scope=${{ matrix.image }}
+        cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+    env:
+      OVERLAY: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+      KUBE_CONFIG_B64: ${{ github.ref_name == 'main' && secrets.KUBE_CONFIG_PROD || secrets.KUBE_CONFIG_DEV }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ env.CONFIG_REPO }}
+        token: ${{ secrets.CONFIG_REPO_TOKEN }}
+
+    - name: Record image tags in k8s-config
+      run: |
+        TAG="${GITHUB_SHA::8}"
+        echo "TAG=$TAG" >> "$GITHUB_ENV"
+        f=config/overlays/$OVERLAY/kustomization.yaml
+        for img in k8s-app-frontend k8s-app-backend; do
+          sed -i -E "s#(name: ghcr\.io/$OWNER/$img, newTag: ).*#\1\"$TAG\" }#" "$f"
+          grep -q "name: ghcr.io/$OWNER/$img, newTag: \"$TAG\" }" "$f" || { echo "image entry for $img not found in $f"; exit 1; }
+        done
+        git config user.name "ci"
+        git config user.email "ci@users.noreply.github.com"
+        git diff --quiet || git commit -am "deploy fullstack $TAG to $OVERLAY"
+        pushed=false
+        for i in 1 2 3 4; do
+          if git pull --rebase origin main && git push origin HEAD:main; then pushed=true; break; fi
+          sleep $((i * 3))
+        done
+        $pushed
+
+    - name: Apply to the cluster
+      run: |
+        test -n "$KUBE_CONFIG_B64" || { echo "kubeconfig secret for $OVERLAY is not set"; exit 1; }
+        mkdir -p ~/.kube
+        echo "$KUBE_CONFIG_B64" | base64 -d > ~/.kube/config
+        chmod 600 ~/.kube/config
+        kubectl apply -k config/overlays/$OVERLAY
+        kubectl rollout status deploy/k8s-app-backend -n $OVERLAY --timeout=180s
+        kubectl rollout status deploy/k8s-app-frontend -n $OVERLAY --timeout=180s

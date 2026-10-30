@@ -1,0 +1,42 @@
+
+# Git
+.git
+.gitignore
+
+# Environment files and secrets
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Node.js
+**/node_modules
+**/.next
+**/out
+**/coverage
+**/npm-debug.log*
+**/tsconfig.tsbuildinfo
+
+# Python
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.venv
+**/venv
+**/*.egg-info
+
+# Build artifacts
+**/dist
+**/build
+
+# Editor and OS files
+**/.DS_Store
+**/.idea
+**/.vscode
+
+# Tests and documentation (optional exclusions)
+# **/tests
