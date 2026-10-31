@@ -26,7 +26,6 @@ services:
     restart: unless-stopped
     environment:
       NODE_ENV: production
-      # Same key as the API: the browser fetches it at runtime to encrypt requests / decrypt responses.
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
       PORT: "3000"
       HOSTNAME: "0.0.0.0"
